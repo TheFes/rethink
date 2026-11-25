@@ -291,13 +291,9 @@ export default class Device extends AABBDevice {
         // Derive door_lock from status for Delayed and active-cycle states where
         // 0xD8 packets are not emitted. HA device_class='lock': OFF=Locked, ON=Unlocked.
         // Off(0) → unlocked → ON; Standby(1) → rec[17] bit6; everything else → locked → OFF.
-        // In Standby the door locks when remote start is enabled, without any 0xD8 packet; the
-        // 0xD8 sent at power-on (0x22) did not coincide with a cloud doorLock report.
-        // Checked for a dedicated lock bit in this record: across 10 real 0xD8 lock/unlock
-        // transitions captured while status stayed Ready, no byte changed consistently with the
-        // lock state (the one byte that changed most often, [20], moved unpredictably — 1→0 in
-        // some transitions, 2→3 or 4→4 in others — matching dial-scroll noise, not a lock flag).
-        // 0xD8 is genuinely the only real-time lock source on this model.
+        // In Standby the door locks when remote start is enabled, without any 0xD8 packet, and
+        // rec[17] bit6 matched every cloud doorLock report. The 0xD8 sent at power-on (0x22) did
+        // not coincide with one, so 0xD8 transitions in Standby are not treated as lock changes.
         if (status === 0) this.publishProperty('door_lock', 'ON')
         else if (status === 1) this.publishProperty('door_lock', active ? 'OFF' : 'ON')
         else this.publishProperty('door_lock', 'OFF')
@@ -327,10 +323,10 @@ export default class Device extends AABBDevice {
         if (isD8) {
             // Non-zero = door machine-locked; 0x00 = not machine-locked.
             // HA binary_sensor device_class='lock': OFF=Locked (Vergrendeld), ON=Unlocked (Ontgrendeld).
-            // Only used before a status record arrives or while Off; in Standby rec[17] bit6 is
-            // authoritative, and it is ignored once an active-cycle state is established because the machine can send 0xD8 buf[2]=0x00 spuriously
-            // during washing/rinsing (e.g. on child-lock toggle), which would otherwise
-            // incorrectly override the status-derived door_lock=OFF.
+            // Only used before a status record arrives or while Off. In Standby rec[17] bit6 is
+            // authoritative, and during a cycle the machine can send 0xD8 buf[2]=0x00 spuriously
+            // (e.g. on child-lock toggle), which would otherwise incorrectly override the
+            // status-derived door_lock=OFF.
             if (this.lastStatus <= 0) this.publishProperty('door_lock', buf[2] ? 'OFF' : 'ON')
             return
         }
