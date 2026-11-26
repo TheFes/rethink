@@ -39,6 +39,29 @@ const STATUS = Enum.of({
 // What the LG app sent for soil level and rinse in every captured F026, for three different courses
 // (SOILWASH_NORMAL, RINSE_NORMAL). Used when the appliance reports nothing, e.g. while asleep.
 const DEFAULT_SOIL = 3
+
+// What the panel of this model offers, for the selects. The sensors keep the shared tables, so any
+// other code the appliance reports still reads. Cold, 30 °C and 95 °C use the shared codes and have not
+// been captured; the others were seen in captures and F026 starts (2026-11-25/26). The LG app's 'Max'
+// (0xFF) ran as 1400 rpm, so it is left out.
+const SET_SPINS = Enum.of({
+    'Not selected': 0,
+    'No spin': 1,
+    '400 rpm': 2,
+    '800 rpm': 5,
+    '1000 rpm': 7,
+    '1200 rpm': 9,
+    '1400 rpm': 10,
+})
+const SET_TEMPERATURES = Enum.of({
+    'Not selected': 0,
+    Cold: 1,
+    '20 °C': 2,
+    '30 °C': 3,
+    '40 °C': 4,
+    '60 °C': 6,
+    '95 °C': 7,
+})
 const DEFAULT_RINSE = 1
 
 // Programme options, each set on the panel and echoed by the LG app in the F026 that started a Cotton
@@ -114,7 +137,7 @@ export default class Device extends AABBDevice {
                         command_topic: '$this/set_temp/set',
                         name: 'Set temperature',
                         icon: 'mdi:thermometer',
-                        options: TEMPERATURES.options,
+                        options: SET_TEMPERATURES.options,
                     },
                     set_spin: {
                         platform: 'select',
@@ -123,7 +146,7 @@ export default class Device extends AABBDevice {
                         command_topic: '$this/set_spin/set',
                         name: 'Set spin',
                         icon: 'mdi:autorenew',
-                        options: SPINS.options,
+                        options: SET_SPINS.options,
                     },
                     set_prewash: {
                         platform: 'switch',
@@ -518,7 +541,7 @@ export default class Device extends AABBDevice {
             return
         }
 
-        const table = { set_course: COURSES, set_temp: TEMPERATURES, set_spin: SPINS }
+        const table = { set_course: COURSES, set_temp: SET_TEMPERATURES, set_spin: SET_SPINS }
         if (prop in table) {
             const code = table[prop as keyof typeof table].unmap(mqttValue)
             if (code !== undefined) this.pending.set(prop.slice(4) as 'course' | 'spin' | 'temp', code)
@@ -545,8 +568,8 @@ export default class Device extends AABBDevice {
 
     private publishSettings() {
         this.publishProperty('set_course', COURSES.map(this.setting('course')))
-        this.publishProperty('set_temp', TEMPERATURES.map(this.setting('temp')))
-        this.publishProperty('set_spin', SPINS.map(this.setting('spin')))
+        this.publishProperty('set_temp', SET_TEMPERATURES.map(this.setting('temp')))
+        this.publishProperty('set_spin', SET_SPINS.map(this.setting('spin')))
         for (const option of OPTIONS) this.publishProperty(`set_${option}`, this.option(option) ? 'ON' : 'OFF')
     }
 

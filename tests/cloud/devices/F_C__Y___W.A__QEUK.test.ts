@@ -729,6 +729,32 @@ describe(MODEL_ID, () => {
         assert.equal(props.set_spin, '400 rpm')
     })
 
+    test('spin and temperature selects only offer what the panel offers', () => {
+        const { ha, thinq, dev } = makeDevice()
+        const components = ha.devices[DEVICE_ID].config!.components as Record<string, { options?: string[] }>
+        assert.deepEqual(components.set_spin.options, [
+            'Not selected',
+            'No spin',
+            '400 rpm',
+            '800 rpm',
+            '1000 rpm',
+            '1200 rpm',
+            '1400 rpm',
+        ])
+        assert.deepEqual(components.set_temp.options, [
+            'Not selected',
+            'Cold',
+            '20 °C',
+            '30 °C',
+            '40 °C',
+            '60 °C',
+            '95 °C',
+        ])
+        thinq.emit('data', SAMPLE_REMOTE_START_ON_EC)
+        dev.setProperty('set_spin', '1600 rpm') // not on this panel: ignored
+        assert.equal(ha.devices[DEVICE_ID].properties.set_spin, '1400 rpm')
+    })
+
     test('HA write to unknown property emits no packet', () => {
         const { thinq, dev } = makeDevice()
         thinq.resetRecorder()
