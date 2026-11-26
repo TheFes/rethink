@@ -41,6 +41,16 @@ const STATUS = Enum.of({
 const DEFAULT_SOIL = 3
 const DEFAULT_RINSE = 1
 
+// Programme options, each set on the panel and echoed by the LG app in the F026 that started a Cotton
+// wash (capture 2026-11-26). Intensive and extra rinse are values of the soil and rinse bytes, prewash
+// and wrinkle care are bits that sit in the same place as in the status record.
+const INTENSIVE_SOIL = 4 // rec[9] and F026 soil: 3 → 4
+const EXTRA_RINSE = 2 // rec[12] and F026 rinse: 1 → 2 (panel: Spoelen+)
+const PREWASH = 0x40 // rec[16] bit6 and the F026 options byte
+const WRINKLE_CARE = 0x20 // rec[17] bit5 and the F026 flags byte (0x03 → 0x23)
+const OPTIONS = ['prewash', 'wrinkle_care', 'intensive', 'extra_rinse'] as const
+type Option = (typeof OPTIONS)[number]
+
 export default class Device extends AABBDevice {
     // Tracks the last status byte from 0xEC/0xEB so the 0xD8 handler can
     // suppress spurious door_lock=OFF messages during active-cycle states.
@@ -48,7 +58,9 @@ export default class Device extends AABBDevice {
     /** Programme settings chosen in HA but not yet run, as wire codes. Cleared once run. */
     private pending = new Map<'course' | 'spin' | 'temp', number>()
     /** The programme the appliance last reported; 0 means not selected. */
-    private reported = { course: 0, soil: 0, spin: 0, temp: 0, rinse: 0 }
+    private reported = { course: 0, soil: 0, spin: 0, temp: 0, rinse: 0, options: 0, flags: 0 }
+    /** Options switched in HA but not yet run. Cleared once run. */
+    private pendingOptions = new Map<Option, boolean>()
 
     constructor(HA: Connection, thinq: Thinq2Device, meta: Metadata) {
         // Needs the cloud's acks. Unacked, this family retransmits then re-deploys, which HA shows
@@ -108,6 +120,38 @@ export default class Device extends AABBDevice {
                         name: 'Set spin',
                         icon: 'mdi:autorenew',
                         options: SPINS.options,
+                    },
+                    set_prewash: {
+                        platform: 'switch',
+                        unique_id: '$deviceid-set_prewash',
+                        state_topic: '$this/set_prewash',
+                        command_topic: '$this/set_prewash/set',
+                        name: 'Set prewash',
+                        icon: 'mdi:water-plus-outline',
+                    },
+                    set_wrinkle_care: {
+                        platform: 'switch',
+                        unique_id: '$deviceid-set_wrinkle_care',
+                        state_topic: '$this/set_wrinkle_care',
+                        command_topic: '$this/set_wrinkle_care/set',
+                        name: 'Set wrinkle care',
+                        icon: 'mdi:tshirt-crew-outline',
+                    },
+                    set_intensive: {
+                        platform: 'switch',
+                        unique_id: '$deviceid-set_intensive',
+                        state_topic: '$this/set_intensive',
+                        command_topic: '$this/set_intensive/set',
+                        name: 'Set intensive',
+                        icon: 'mdi:arm-flex-outline',
+                    },
+                    set_extra_rinse: {
+                        platform: 'switch',
+                        unique_id: '$deviceid-set_extra_rinse',
+                        state_topic: '$this/set_extra_rinse',
+                        command_topic: '$this/set_extra_rinse/set',
+                        name: 'Set extra rinse',
+                        icon: 'mdi:water-sync',
                     },
                     run_programme: {
                         platform: 'button',
@@ -197,6 +241,27 @@ export default class Device extends AABBDevice {
                         name: 'Wrinkle care',
                         icon: 'mdi:tshirt-crew-outline',
                     },
+                    prewash: {
+                        platform: 'binary_sensor',
+                        unique_id: '$deviceid-prewash',
+                        state_topic: '$this/prewash',
+                        name: 'Prewash',
+                        icon: 'mdi:water-plus-outline',
+                    },
+                    intensive: {
+                        platform: 'binary_sensor',
+                        unique_id: '$deviceid-intensive',
+                        state_topic: '$this/intensive',
+                        name: 'Intensive',
+                        icon: 'mdi:arm-flex-outline',
+                    },
+                    extra_rinse: {
+                        platform: 'binary_sensor',
+                        unique_id: '$deviceid-extra_rinse',
+                        state_topic: '$this/extra_rinse',
+                        name: 'Extra rinse',
+                        icon: 'mdi:water-sync',
+                    },
                     child_lock: {
                         platform: 'binary_sensor',
                         unique_id: '$deviceid-child_lock',
@@ -273,14 +338,17 @@ export default class Device extends AABBDevice {
     //                            F026 commands that started them (capture 2026-11-26). 0 when not selected.
     //   [8]     error_code       — ERRORS index; 0=OK; 0x01=DE2 (door lock error) confirmed via
     //                            live dE2 capture 2026-08-02.
-    //   [9]     soil level       — 3 with the cloud's SOILWASH_NORMAL; 0 when not selected
+    //   [9]     soil level       — 3 with the cloud's SOILWASH_NORMAL, 4 with Intensive on the panel
+    //                            (capture 2026-11-26); 0 when not selected
     //   [10]    spin index       — SPINS[10]=1400 RPM confirmed
     //   [11]    temp index       — TEMPERATURES[4]=40°C confirmed
-    //   [12]    rinse            — 1 with the cloud's RINSE_NORMAL; 0 when not selected and once the
+    //   [12]    rinse            — 1 with the cloud's RINSE_NORMAL, 2 with Spoelen+ (extra rinse) on the
+    //                            panel (capture 2026-11-26); 0 when not selected and once the
     //                            rinses are done. Not the course: it stayed 1 for Quick 14, Eco and Ease Care.
     //   [14]    delay hours      — 4 confirmed
     //   [15]    delay minutes    — counts down 1/min confirmed
     //   [16]    bit7=steam       — 0x80=steam ON; confirmed via steam-toggle experiment
+    //           bit6=prewash     — 0x40=prewash ON; toggled on the panel (capture 2026-11-26)
     //   [17]    bit1=remote_start — matches the LG cloud's remoteStart ON/OFF reports (capture 2026-11-25);
     //                            the device also sends a 0x72 packet (c9=on, c8=off) at each change
     //           bit6=active      — set once start is pressed; through Measuring/Delayed/Washing/Rinsing/Spinning/End.
@@ -335,12 +403,15 @@ export default class Device extends AABBDevice {
         this.publishProperty('remote_start', remote_start ? 'ON' : 'OFF')
         this.publishProperty('steam', steam ? 'ON' : 'OFF')
         this.publishProperty('wrinkle_care', wrinkle_care ? 'ON' : 'OFF')
+        this.publishProperty('prewash', rec[16] & PREWASH ? 'ON' : 'OFF')
+        this.publishProperty('intensive', rec[9] === INTENSIVE_SOIL ? 'ON' : 'OFF')
+        this.publishProperty('extra_rinse', rec[12] === EXTRA_RINSE ? 'ON' : 'OFF')
         this.publishProperty('active', active ? 'ON' : 'OFF')
         this.publishProperty('child_lock', child_lock ? 'OFF' : 'ON')
         this.publishProperty('tub_clean_count', tub_clean_count)
         this.publishProperty('sleep', sleep ? 'ON' : 'OFF')
 
-        this.reported = { course, soil: rec[9], spin, temp, rinse: rec[12] }
+        this.reported = { course, soil: rec[9], spin, temp, rinse: rec[12], options: rec[16], flags: rec[17] }
         this.publishSettings()
 
         // Derive door_lock from status for Delayed and active-cycle states where
@@ -410,6 +481,14 @@ export default class Device extends AABBDevice {
             this.send(command)
             // The appliance is the authority on what runs now; follow it again.
             this.pending.clear()
+            this.pendingOptions.clear()
+            this.publishSettings()
+            return
+        }
+
+        const option = OPTIONS.find((o) => prop === `set_${o}`)
+        if (option) {
+            if (mqttValue === 'ON' || mqttValue === 'OFF') this.pendingOptions.set(option, mqttValue === 'ON')
             this.publishSettings()
             return
         }
@@ -426,18 +505,36 @@ export default class Device extends AABBDevice {
         return this.pending.get(prop) ?? this.reported[prop]
     }
 
+    private option(option: Option) {
+        const pending = this.pendingOptions.get(option)
+        if (pending !== undefined) return pending
+        const { soil, rinse, options, flags } = this.reported
+        if (option === 'prewash') return (options & PREWASH) !== 0
+        if (option === 'wrinkle_care') return (flags & WRINKLE_CARE) !== 0
+        if (option === 'intensive') return soil === INTENSIVE_SOIL
+        return rinse === EXTRA_RINSE
+    }
+
     private publishSettings() {
         this.publishProperty('set_course', COURSES.map(this.setting('course')))
         this.publishProperty('set_temp', TEMPERATURES.map(this.setting('temp')))
         this.publishProperty('set_spin', SPINS.map(this.setting('spin')))
+        for (const option of OPTIONS) this.publishProperty(`set_${option}`, this.option(option) ? 'ON' : 'OFF')
+    }
+
+    /** The reported value, unless it is the option's value and the option is switched off. */
+    private optionValue(reported: number, option: Option, value: number, fallback: number) {
+        if (this.option(option)) return value
+        return reported && reported !== value ? reported : fallback
     }
 
     /**
      * F0 26 <course> <soil> <spin> <temp> <rinse> 00 00 00 00 <options> 03 00 00 00 00 00
      *
      * The layout the LG app used for Quick 14, Eco 40-60 and Ease Care (capture 2026-11-26), and the
-     * sibling Y_V8_Y___W.B32QEUK's F026. Options stay 0: steam and the other option bits have not been
-     * captured for this model. 0x03 is initialBit | remoteStart, as in every captured start.
+     * sibling Y_V8_Y___W.B32QEUK's F026. The app copies the panel's options into it: Intensive as soil 4,
+     * extra rinse as rinse 2, prewash as 0x40 in <options> and wrinkle care as 0x20 in the byte after it
+     * (capture 2026-11-26, one option per start). 0x03 is initialBit | remoteStart, as in every captured start.
      * Returns null rather than sending a programme with an unselected course, spin or temperature.
      */
     private programmeCommand() {
@@ -449,16 +546,16 @@ export default class Device extends AABBDevice {
             0xf0,
             0x26,
             course,
-            this.reported.soil || DEFAULT_SOIL,
+            this.optionValue(this.reported.soil, 'intensive', INTENSIVE_SOIL, DEFAULT_SOIL),
             spin,
             temp,
-            this.reported.rinse || DEFAULT_RINSE,
+            this.optionValue(this.reported.rinse, 'extra_rinse', EXTRA_RINSE, DEFAULT_RINSE),
             0,
             0,
             0,
             0,
-            0,
-            0x03,
+            this.option('prewash') ? PREWASH : 0,
+            0x03 | (this.option('wrinkle_care') ? WRINKLE_CARE : 0),
             0,
             0,
             0,
