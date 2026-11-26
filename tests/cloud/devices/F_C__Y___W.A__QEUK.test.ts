@@ -689,6 +689,29 @@ describe(MODEL_ID, () => {
         }
     })
 
+    test('a change on the panel replaces what was set in HA, sleep does not (real captures)', () => {
+        const { ha, thinq, dev } = makeDevice()
+        const props = ha.devices[DEVICE_ID].properties
+        thinq.emit('data', SAMPLE_REMOTE_START_ON_EC) // Cotton 40 °C 1400 rpm, no options
+        dev.setProperty('set_prewash', 'ON')
+        dev.setProperty('set_spin', '400 rpm')
+        thinq.emit('data', SAMPLE_REMOTE_START_ON_EC) // unchanged panel: HA settings stay
+        assert.equal(props.set_prewash, 'ON')
+        assert.equal(props.set_spin, '400 rpm')
+        thinq.emit('data', SAMPLE_INTENSIVE_READY_EC) // only Intensive changed on the panel
+        assert.equal(props.set_intensive, 'ON')
+        assert.equal(props.set_prewash, 'ON', 'not changed on the panel, HA setting stays')
+        assert.equal(props.set_spin, '400 rpm')
+        dev.setProperty('set_intensive', 'OFF')
+        thinq.emit('data', SAMPLE_PREWASH_READY_EC) // prewash on, intensive off on the panel
+        assert.equal(props.set_prewash, 'ON')
+        assert.equal(props.set_intensive, 'OFF')
+        dev.setProperty('set_prewash', 'OFF')
+        thinq.emit('data', SAMPLE_SLEEP_EC) // sleep clears the panel, not the HA settings
+        assert.equal(props.set_prewash, 'OFF')
+        assert.equal(props.set_spin, '400 rpm')
+    })
+
     test('HA write to unknown property emits no packet', () => {
         const { thinq, dev } = makeDevice()
         thinq.resetRecorder()
