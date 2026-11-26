@@ -192,6 +192,7 @@ describe(MODEL_ID, () => {
             'set_temp',
             'set_spin',
             'set_prewash',
+            'set_steam',
             'set_wrinkle_care',
             'set_intensive',
             'set_extra_rinse',
@@ -687,6 +688,22 @@ describe(MODEL_ID, () => {
             // Plain Cotton 40 °C 1400 rpm: normal soil and rinse, no option bits
             assert.equal(hex(thinq.outbox[0]).slice(4, -4), 'F02601030A04010000000000030000000000')
         }
+    })
+
+    test('steam (experimental) follows rec[16] bit7 and is sent as 0x80 in the options byte', () => {
+        const { ha, thinq, dev } = makeDevice()
+        thinq.emit('data', SAMPLE_STEAM_ON_EC)
+        assert.equal(ha.devices[DEVICE_ID].properties.set_steam, 'ON')
+        thinq.emit('data', SAMPLE_SLEEP_EC)
+        assert.equal(ha.devices[DEVICE_ID].properties.set_steam, 'OFF')
+        thinq.resetRecorder()
+        dev.setProperty('set_course', 'Cotton')
+        dev.setProperty('set_spin', '1400 rpm')
+        dev.setProperty('set_temp', '40 °C')
+        dev.setProperty('set_steam', 'ON')
+        dev.setProperty('set_prewash', 'ON')
+        dev.setProperty('run_programme', '')
+        assert.equal(hex(thinq.outbox[0]).slice(4, -4), 'F02601030A040100000000C0030000000000')
     })
 
     test('HA write to unknown property emits no packet', () => {
