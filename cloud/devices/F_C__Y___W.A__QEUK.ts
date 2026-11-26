@@ -422,7 +422,20 @@ export default class Device extends AABBDevice {
         this.publishProperty('tub_clean_count', tub_clean_count)
         this.publishProperty('sleep', sleep ? 'ON' : 'OFF')
 
+        const previous = this.reported
+        const previousOptions = OPTIONS.map((o) => [o, this.reportedOption(o)] as const)
         this.reported = { course, soil: rec[9], spin, temp, rinse: rec[12], options: rec[16], flags: rec[17] }
+        // A change made on the panel replaces what was set in HA for that setting, so the selects
+        // and switches keep following the panel. Only while a programme is selected on both sides:
+        // sleep, Off and waking clear or restore everything, which is not a choice made on the panel.
+        if (previous.course && course && !sleep) {
+            for (const prop of ['course', 'spin', 'temp'] as const) {
+                if (previous[prop] !== this.reported[prop]) this.pending.delete(prop)
+            }
+            for (const [option, was] of previousOptions) {
+                if (was !== this.reportedOption(option)) this.pendingOptions.delete(option)
+            }
+        }
         this.publishSettings()
 
         // Derive door_lock from status for Delayed and active-cycle states where
@@ -517,8 +530,10 @@ export default class Device extends AABBDevice {
     }
 
     private option(option: Option) {
-        const pending = this.pendingOptions.get(option)
-        if (pending !== undefined) return pending
+        return this.pendingOptions.get(option) ?? this.reportedOption(option)
+    }
+
+    private reportedOption(option: Option) {
         const { soil, rinse, options, flags } = this.reported
         if (option === 'prewash') return (options & PREWASH) !== 0
         if (option === 'steam') return (options & STEAM) !== 0
