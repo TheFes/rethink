@@ -48,7 +48,11 @@ const INTENSIVE_SOIL = 4 // rec[9] and F026 soil: 3 → 4
 const EXTRA_RINSE = 2 // rec[12] and F026 rinse: 1 → 2 (panel: Spoelen+)
 const PREWASH = 0x40 // rec[16] bit6 and the F026 options byte
 const WRINKLE_CARE = 0x20 // rec[17] bit5 and the F026 flags byte (0x03 → 0x23)
-const OPTIONS = ['prewash', 'wrinkle_care', 'intensive', 'extra_rinse'] as const
+// The LG app leaves steam out of its F026 (it sent 40 °C and spin 0xFF, and the wash ran without steam),
+// but the options byte takes the status bit, as it does for prewash: Cotton 60 °C 1400 rpm with 0x80
+// started with steam on (2026-11-26). The panel raises Cotton to 60 °C when steam is switched on.
+const STEAM = 0x80 // rec[16] bit7 and the F026 options byte
+const OPTIONS = ['prewash', 'steam', 'wrinkle_care', 'intensive', 'extra_rinse'] as const
 type Option = (typeof OPTIONS)[number]
 
 export default class Device extends AABBDevice {
@@ -128,6 +132,14 @@ export default class Device extends AABBDevice {
                         command_topic: '$this/set_prewash/set',
                         name: 'Set prewash',
                         icon: 'mdi:water-plus-outline',
+                    },
+                    set_steam: {
+                        platform: 'switch',
+                        unique_id: '$deviceid-set_steam',
+                        state_topic: '$this/set_steam',
+                        command_topic: '$this/set_steam/set',
+                        name: 'Set steam',
+                        icon: 'mdi:kettle-steam',
                     },
                     set_wrinkle_care: {
                         platform: 'switch',
@@ -525,6 +537,7 @@ export default class Device extends AABBDevice {
     private reportedOption(option: Option) {
         const { soil, rinse, options, flags } = this.reported
         if (option === 'prewash') return (options & PREWASH) !== 0
+        if (option === 'steam') return (options & STEAM) !== 0
         if (option === 'wrinkle_care') return (flags & WRINKLE_CARE) !== 0
         if (option === 'intensive') return soil === INTENSIVE_SOIL
         return rinse === EXTRA_RINSE
@@ -549,7 +562,8 @@ export default class Device extends AABBDevice {
      * The layout the LG app used for Quick 14, Eco 40-60 and Ease Care (capture 2026-11-26), and the
      * sibling Y_V8_Y___W.B32QEUK's F026. The app copies the panel's options into it: Intensive as soil 4,
      * extra rinse as rinse 2, prewash as 0x40 in <options> and wrinkle care as 0x20 in the byte after it
-     * (capture 2026-11-26, one option per start). 0x03 is initialBit | remoteStart, as in every captured start.
+     * (capture 2026-11-26, one option per start). The app leaves steam out, but the appliance accepts it as
+     * 0x80 in <options>. 0x03 is initialBit | remoteStart, as in every captured start.
      * Returns null rather than sending a programme with an unselected course, spin or temperature.
      */
     private programmeCommand() {
@@ -569,7 +583,7 @@ export default class Device extends AABBDevice {
             0,
             0,
             0,
-            this.option('prewash') ? PREWASH : 0,
+            (this.option('prewash') ? PREWASH : 0) | (this.option('steam') ? STEAM : 0),
             0x03 | (this.option('wrinkle_care') ? WRINKLE_CARE : 0),
             0,
             0,
