@@ -143,6 +143,9 @@ const WRITE_POWER_ON = 'AA08F02A010098BB'
 const WRITE_POWER_OFF = 'AA09F0240101009CBB'
 const WRITE_PAUSE = 'AA09F02404010099BB'
 const WRITE_START = 'AA09F02405010098BB'
+// F026 commands the LG app sent (capture 2026-11-26), framed as on the wire.
+const WRITE_RUN_QUICK_14 = 'AA16F0260C030102010000000000030000000000B9BB'
+const WRITE_RUN_ECO = 'AA16F02604030706010000000000030000000000BBBB'
 
 function makeDevice() {
     const ha = new MockHAConnection()
@@ -161,6 +164,10 @@ describe(MODEL_ID, () => {
             'power',
             'start',
             'pause',
+            'set_course',
+            'set_temp',
+            'set_spin',
+            'run_programme',
             'status',
             'error',
             'error_message',
@@ -545,6 +552,34 @@ describe(MODEL_ID, () => {
         thinq.resetRecorder()
         dev.setProperty('start', '')
         assert.equal(hex(thinq.outbox[0]), WRITE_START)
+    })
+
+    test('run_programme sends the staged programme as the LG app does (real captures)', () => {
+        const { ha, thinq, dev } = makeDevice()
+        thinq.emit('data', SAMPLE_REMOTE_START_ON_EC) // Cotton 40 °C 1400 rpm on the panel
+        thinq.resetRecorder()
+        dev.setProperty('set_course', 'Quick 14')
+        dev.setProperty('set_spin', 'No spin')
+        dev.setProperty('set_temp', '20 °C')
+        assert.equal(thinq.outbox.length, 0, 'selecting sends nothing')
+        assert.equal(ha.devices[DEVICE_ID].properties.set_course, 'Quick 14')
+        dev.setProperty('run_programme', '')
+        assert.equal(hex(thinq.outbox[0]), WRITE_RUN_QUICK_14)
+        // After running, the selects follow the appliance again
+        assert.equal(ha.devices[DEVICE_ID].properties.set_course, 'Cotton')
+    })
+
+    test('run_programme uses the LG app defaults for soil and rinse while asleep', () => {
+        const { thinq, dev } = makeDevice()
+        thinq.emit('data', SAMPLE_SLEEP_EC) // everything cleared
+        thinq.resetRecorder()
+        dev.setProperty('run_programme', '')
+        assert.equal(thinq.outbox.length, 0, 'nothing selected, nothing sent')
+        dev.setProperty('set_course', 'Eco 40-60')
+        dev.setProperty('set_spin', '1000 rpm')
+        dev.setProperty('set_temp', '60 °C')
+        dev.setProperty('run_programme', '')
+        assert.equal(hex(thinq.outbox[0]), WRITE_RUN_ECO)
     })
 
     test('HA write to unknown property emits no packet', () => {

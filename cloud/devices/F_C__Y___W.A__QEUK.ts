@@ -31,10 +31,24 @@ const STATUS = Enum.of({
 // 62-byte AABB status packet (0x20 0xEC subtype).
 // Offsets confirmed from live captures against known settings:
 //   Cotton/40°C/1400RPM/Normal-rinse, delayed-start 4h, tub-clean-counter=9, remote-start=off.
+// The plain start command (F024 05) always runs the default programme (Cotton 40 °C 1400 rpm), whatever
+// the panel shows. A remote start of a chosen programme needs F026, which carries the whole programme
+// and starts it; there is no command that only configures. So the set_* selects below are held here
+// until Run programme is pressed, each defaulting to what the appliance last reported.
+
+// What the LG app sent for soil level and rinse in every captured F026, for three different courses
+// (SOILWASH_NORMAL, RINSE_NORMAL). Used when the appliance reports nothing, e.g. while asleep.
+const DEFAULT_SOIL = 3
+const DEFAULT_RINSE = 1
+
 export default class Device extends AABBDevice {
     // Tracks the last status byte from 0xEC/0xEB so the 0xD8 handler can
     // suppress spurious door_lock=OFF messages during active-cycle states.
     private lastStatus = -1
+    /** Programme settings chosen in HA but not yet run, as wire codes. Cleared once run. */
+    private pending = new Map<'course' | 'spin' | 'temp', number>()
+    /** The programme the appliance last reported; 0 means not selected. */
+    private reported = { course: 0, soil: 0, spin: 0, temp: 0, rinse: 0 }
 
     constructor(HA: Connection, thinq: Thinq2Device, meta: Metadata) {
         // Needs the cloud's acks. Unacked, this family retransmits then re-deploys, which HA shows
@@ -67,6 +81,41 @@ export default class Device extends AABBDevice {
                         payload_press: '',
                         name: 'Pause',
                         icon: 'mdi:pause-circle-outline',
+                    },
+                    set_course: {
+                        platform: 'select',
+                        unique_id: '$deviceid-set_course',
+                        state_topic: '$this/set_course',
+                        command_topic: '$this/set_course/set',
+                        name: 'Set course',
+                        icon: 'mdi:tune-vertical',
+                        options: COURSES.options,
+                    },
+                    set_temp: {
+                        platform: 'select',
+                        unique_id: '$deviceid-set_temp',
+                        state_topic: '$this/set_temp',
+                        command_topic: '$this/set_temp/set',
+                        name: 'Set temperature',
+                        icon: 'mdi:thermometer',
+                        options: TEMPERATURES.options,
+                    },
+                    set_spin: {
+                        platform: 'select',
+                        unique_id: '$deviceid-set_spin',
+                        state_topic: '$this/set_spin',
+                        command_topic: '$this/set_spin/set',
+                        name: 'Set spin',
+                        icon: 'mdi:autorenew',
+                        options: SPINS.options,
+                    },
+                    run_programme: {
+                        platform: 'button',
+                        unique_id: '$deviceid-run_programme',
+                        command_topic: '$this/run_programme/set',
+                        payload_press: '',
+                        name: 'Run programme',
+                        icon: 'mdi:play-box-outline',
                     },
                     status: {
                         platform: 'sensor',
@@ -291,6 +340,9 @@ export default class Device extends AABBDevice {
         this.publishProperty('tub_clean_count', tub_clean_count)
         this.publishProperty('sleep', sleep ? 'ON' : 'OFF')
 
+        this.reported = { course, soil: rec[9], spin, temp, rinse: rec[12] }
+        this.publishSettings()
+
         // Derive door_lock from status for Delayed and active-cycle states where
         // 0xD8 packets are not emitted. HA device_class='lock': OFF=Locked, ON=Unlocked.
         // Off(0) → unlocked → ON; Standby(1) → rec[17] bit6; everything else → locked → OFF.
@@ -348,5 +400,70 @@ export default class Device extends AABBDevice {
 
         if (prop === 'pause') this.send(Buffer.from('F024040100', 'hex'))
         if (prop === 'start') this.send(Buffer.from('F024050100', 'hex'))
+
+        if (prop === 'run_programme') {
+            const command = this.programmeCommand()
+            if (!command) {
+                this.log('run_programme: course, spin or temperature not selected, nothing sent')
+                return
+            }
+            this.send(command)
+            // The appliance is the authority on what runs now; follow it again.
+            this.pending.clear()
+            this.publishSettings()
+            return
+        }
+
+        const table = { set_course: COURSES, set_temp: TEMPERATURES, set_spin: SPINS }
+        if (prop in table) {
+            const code = table[prop as keyof typeof table].unmap(mqttValue)
+            if (code !== undefined) this.pending.set(prop.slice(4) as 'course' | 'spin' | 'temp', code)
+            this.publishSettings()
+        }
+    }
+
+    private setting(prop: 'course' | 'spin' | 'temp') {
+        return this.pending.get(prop) ?? this.reported[prop]
+    }
+
+    private publishSettings() {
+        this.publishProperty('set_course', COURSES.map(this.setting('course')))
+        this.publishProperty('set_temp', TEMPERATURES.map(this.setting('temp')))
+        this.publishProperty('set_spin', SPINS.map(this.setting('spin')))
+    }
+
+    /**
+     * F0 26 <course> <soil> <spin> <temp> <rinse> 00 00 00 00 <options> 03 00 00 00 00 00
+     *
+     * The layout the LG app used for Quick 14, Eco 40-60 and Ease Care (capture 2026-11-26), and the
+     * sibling Y_V8_Y___W.B32QEUK's F026. Options stay 0: steam and the other option bits have not been
+     * captured for this model. 0x03 is initialBit | remoteStart, as in every captured start.
+     * Returns null rather than sending a programme with an unselected course, spin or temperature.
+     */
+    private programmeCommand() {
+        const course = this.setting('course')
+        const spin = this.setting('spin')
+        const temp = this.setting('temp')
+        if (!course || !spin || !temp) return null
+        return Buffer.from([
+            0xf0,
+            0x26,
+            course,
+            this.reported.soil || DEFAULT_SOIL,
+            spin,
+            temp,
+            this.reported.rinse || DEFAULT_RINSE,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0x03,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ])
     }
 }
